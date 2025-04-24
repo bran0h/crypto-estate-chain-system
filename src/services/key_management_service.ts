@@ -1,44 +1,67 @@
 import { ofetch } from 'ofetch'
-import type { Hex } from 'viem'
+import type {
+    EncodeFunctionDataReturnType,
+    Hex,
+    SignTransactionReturnType,
+} from 'viem'
 import { getCookie } from '../utils/cookie'
 import { Request } from 'express'
-
-const RUNTIME_CONFIG = {
-    keyManagementApi: process.env.KEY_MANAGEMENT_API,
-    supabaseInstance: process.env.SUPABASE_INSTANCE,
-}
-
-const api = ofetch.create({
-    baseURL: RUNTIME_CONFIG.keyManagementApi,
-})
 
 type KeyManagementResponse = {
     privateKey: Hex
 }
+
+type SignTransactionResponse = {
+    signature: SignTransactionReturnType
+}
+const kmApi = ofetch.create({
+    baseURL: process.env.KEY_MANAGEMENT_API,
+})
+
+const TOKEN_COOKIE_0 = `sb-${process.env.SUPABASE_INSTANCE}-auth-token.0`
+const TOKEN_COOKIE_1 = `sb-${process.env.SUPABASE_INSTANCE}-auth-token.1`
+
+const getAuthCookie = (req: Request) => {
+    const cookie0 = getCookie(req, TOKEN_COOKIE_0)
+    const cookie1 = getCookie(req, TOKEN_COOKIE_1)
+    if (!cookie0) {
+        throw new Error('Unauthorized - missing cookie 0')
+    }
+    if (!cookie1) {
+        throw new Error('Unauthorized - missing cookie 1')
+    }
+    return `${TOKEN_COOKIE_0}=${cookie0}; ${TOKEN_COOKIE_1}=${cookie1}`
+}
+
 export function useKeyManagementService(req: Request) {
-    const TOKEN_COOKIE_0 = `sb-${RUNTIME_CONFIG.supabaseInstance}-auth-token.0`
-    const TOKEN_COOKIE_1 = `sb-${RUNTIME_CONFIG.supabaseInstance}-auth-token.1`
-
     const getCurrentKey = async () => {
-        // Forward supabase cookies
-        console.log(TOKEN_COOKIE_0, TOKEN_COOKIE_1)
-        const cookie0 = getCookie(req, TOKEN_COOKIE_0)
-        const cookie1 = getCookie(req, TOKEN_COOKIE_1)
-        if (!cookie0) {
-            throw new Error('Unauthorized - missing cookie 0')
-        }
-        if (!cookie1) {
-            throw new Error('Unauthorized - missing cookie 1')
-        }
-
-        const resp = await api<KeyManagementResponse>('/key', {
-            credentials: 'include',
+        const resp = await kmApi<KeyManagementResponse>('/key', {
             headers: {
-                Cookie: `${TOKEN_COOKIE_0}=${cookie0}; ${TOKEN_COOKIE_1}=${cookie1}`,
+                Cookie: getAuthCookie(req),
             },
         })
         return resp.privateKey
     }
 
-    return { getCurrentKey }
+    const signTransaction = async (
+        data: EncodeFunctionDataReturnType,
+        to: Hex,
+        value?: bigint
+    ) => {
+        const resp = await kmApi<SignTransactionResponse>('/sign', {
+            method: 'POST',
+            body: {
+                data,
+                to,
+                value: value ? value.toString() : undefined,
+            },
+            credentials: 'include',
+            headers: {
+                Cookie: getAuthCookie(req),
+            },
+        })
+        return resp.signature
+    }
+
+    return { getCurrentKey, signTransaction }
 }

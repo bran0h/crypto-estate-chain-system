@@ -1,3 +1,4 @@
 {
-    "cSpell.words": ["SUPABASE", "Viem"]
+    "cSpell.words": ["SUPABASE", "Viem"],
+    "typescript.tsdk": "node_modules/typescript/lib"
 }

@@ -1,8 +1,10 @@
 import { Request } from 'express'
+import logger from './logger'
 
 export const getCookie = (event: Request, name: string) => {
     const cookieHeader = event.headers.cookie
     if (!cookieHeader) {
+        logger.warn('No cookies found in request headers')
         return null
     }
     const cookies = cookieHeader.split('; ')
