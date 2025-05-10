@@ -10,8 +10,13 @@ import RealEstateMarketABI, {
 } from "./abi/RealEstateMarketABI";
 import { sepolia } from 'viem/chains'
 import axios from "axios";
+import { createClient } from '@supabase/supabase-js'
+import { Database } from './types/database.js'
+import { log } from 'console';
 
 const camundaApiUrl = process.env.CAMUNDA_API_URL || 'http://localhost:8080/engine-rest'
+const supabaseUrl = process.env.SUPABASE_URL
+const supabaseKey = process.env.SUPABASE_KEY
 
 const logger = consola.create({
     defaults: {
@@ -24,6 +29,14 @@ const logger = consola.create({
     asyncResponseTimeout: 10000,
     maxTasks: 10
 })
+
+export const createDirectServiceClient = () => {
+    
+    if (!supabaseUrl || !supabaseKey) {
+      throw new Error('Missing Supabase environment variables')
+    }
+    return createClient<Database>(supabaseUrl, supabaseKey)
+}
 
 
 client.subscribe("prepareBuyOfferTransaction", async function({ task, taskService }: { task: Task, taskService: TaskService }) {
@@ -116,3 +129,41 @@ client.subscribe("prepareBuyOfferTransaction", async function({ task, taskServic
       }
     }
   });
+
+
+client.subscribe("logBuyOfferTransaction", async function({ task, taskService }: { task: Task, taskService: TaskService }) {
+    try {
+      logger.info("logBuyOfferTransaction task executing...");
+      const transactionHash: string = task.variables.get("transactionHash");
+      const transactionStatus: string = task.variables.get("transactionStatus") || "timeout"; 
+      const offerId: string = task.variables.get("offerId");
+      const userId: string = task.variables.get("userId");
+      logger.info(`Logging transaction with hash: ${transactionHash} and status: ${transactionStatus}`);
+      // save into transaction supabase table
+      const supabaseClient = createDirectServiceClient();
+      const { data, error } = await supabaseClient
+        .from("transactions")
+        .insert([
+          {
+            hash: transactionHash,
+            status: transactionStatus,
+            offer_id: offerId,
+            user_id: userId,
+          },
+        ]);
+      taskService.complete(task);
+
+
+    } catch (error) {
+      logger.error("Error in logBuyOfferTransaction task:", error);
+      if (error instanceof Error) {
+        await taskService.handleBpmnError(
+          task,
+          "LOGGING_ERROR",
+          `Logging transaction failed: ${error.message}`
+        );
+      }
+    }
+  }); 
+
+
