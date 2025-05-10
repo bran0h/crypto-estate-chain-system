@@ -1,72 +1,118 @@
 import dotenv from 'dotenv'
 dotenv.config()
 
-import cookieParser from 'cookie-parser'
-import express from 'express'
-import { useKeyManagementService } from './services/key_management_service'
-import { useMarketService } from './services/market_service'
 import { useViemService } from './services/viem_service'
-import { createOfferValidator } from './validators/offer'
-import logger from './utils/logger'
+import { Client, Variables, TaskService, Task  } from "camunda-external-task-client-js";
+import consola from 'consola'
+import { createWalletClient, encodeFunctionData, http, serializeTransaction } from 'viem'
+import RealEstateMarketABI, {
+    REAL_ESTATE_MARKET_ADDRESS,
+} from "./abi/RealEstateMarketABI";
+import { sepolia } from 'viem/chains'
+import axios from "axios";
 
-const app = express()
-const port = 3002
+const camundaApiUrl = process.env.CAMUNDA_API_URL || 'http://localhost:8080/engine-rest'
 
-app.use(express.json())
-app.use(express.urlencoded({ extended: true }))
-app.use(cookieParser())
+const logger = consola.create({
+    defaults: {
+      tag: "camunda_market_service",
+    },
+  });
 
-app.use(async (req, res, next) => {
-    const service = useKeyManagementService(req)
-    try {
-        const key = await service.getCurrentKey()
-        req.headers['privateKey'] = key
-        next()
-    } catch (e) {
-        logger.error('Error in auth middleware:', (e as Error).message)
-        res.status(401).json({ message: 'Unauthorized' })
-    }
+  const client = new Client({
+    baseUrl: camundaApiUrl,
+    asyncResponseTimeout: 10000,
+    maxTasks: 10
 })
 
-app.use((req, res, next) => {
-    // Error handling middleware
+
+client.subscribe("prepareBuyOfferTransaction", async function({ task, taskService }: { task: Task, taskService: TaskService }) {
     try {
-        next()
+      logger.info("prepareBuyOfferTransaction task executing...");
+      logger.info("Task variables:", task.variables.getAll());
+      const offerId: string = task.variables.get("offerId");
+      const userWallet = task.variables.get("walletAddress");
+      const offerPrice: string = task.variables.get("price");
+      logger.info(`Preparing buy offer transaction for offerId: ${offerId}`);
+
+      const { client: chainClient } = useViemService();
+      const data = encodeFunctionData({
+        abi: RealEstateMarketABI,
+        functionName: "buyOffer",
+        args: [BigInt(offerId)],
+      });
+      const transaction = await chainClient.prepareTransactionRequest({
+        to: REAL_ESTATE_MARKET_ADDRESS,
+        data: data,
+        from: userWallet,
+        value: BigInt(offerPrice),
+        account: userWallet,
+      });
+      const serializedTransaction = serializeTransaction({
+        chainId: sepolia.id,
+        gas: transaction.gas,
+        maxFeePerGas: transaction.maxFeePerGas,
+        maxPriorityFeePerGas: transaction.maxPriorityFeePerGas,
+        nonce: transaction.nonce,
+        to: transaction.to,
+        value: transaction.value,
+        data: transaction.data,
+      });
+      const processVariables = new Variables();
+      processVariables.set("transactionData", {serializedTransaction: serializedTransaction, from: userWallet });
+      await taskService.complete(task, processVariables);
+      logger.success("Transaction preparation completed:", transaction);
     } catch (error) {
-        logger.error('Error handled:', (error as Error).message)
-        res.status(500).json({ message: 'Internal Server Error' })
+      logger.error("Error in getUserWalletAddress task:", error);
+      if (error instanceof Error) {
+        await taskService.handleBpmnError(
+          task, 
+          "FETCH WALLET ERROR",
+          `Wallet address fetching failed: ${error.message}`
+        );
+      }
     }
-})
+  });
 
-app.post('/properties/:id/offer', async (req, res) => {
-    const viemService = useViemService()
-    const kmService = useKeyManagementService(req)
-    const marketService = useMarketService()
-
-    const { id } = req.params
-    const body = await createOfferValidator.parseAsync(req.body)
-
-    logger.info('Creating offer...', {
-        id,
-        amount: body.amount,
-    })
-    const [tx, to] = await marketService.createOffer(
-        BigInt(id),
-        BigInt(body.amount)
-    )
-    logger.info('Trying to sign transaction...')
-    const signedTx = await kmService.signTransaction(tx, to)
-    logger.info('Transaction signed, sending...')
-    const txHash = await viemService.client.sendRawTransaction({
-        serializedTransaction: signedTx,
-    })
-    logger.success('Transaction sent!, hash:', txHash)
-    res.status(200).json({
-        message: 'Offer created',
-        transactionHash: txHash,
-    })
-})
-
-app.listen(port, () => {
-    logger.info(`[Crypto estate - key management] listening on port ${port}`)
-})
+  client.subscribe("broadcastTransaction", async function({ task, taskService }: { task: Task, taskService: TaskService }) {
+    try {
+      logger.info("broadcastTransaction task executing...");
+      const signedTransaction = task.variables.get("signedTransaction");
+      logger.info(`Broadcasting transaction: ${signedTransaction}`);
+      const walletClient = createWalletClient({
+        chain: sepolia,
+        transport: http(),
+      });
+      const transactionHash = await walletClient.sendRawTransaction({serializedTransaction: signedTransaction});
+      const processVariables = new Variables();
+      processVariables.set("transactionHash", transactionHash);
+      await taskService.complete(task, processVariables);
+      logger.success("Transaction broadcasted successfully:", transactionHash);
+      const { client: chainClient } = useViemService();
+      const receipt = await chainClient.waitForTransactionReceipt({
+        hash: transactionHash,
+        timeout: 100000,
+      })
+      logger.success("Transaction receipt:", receipt);
+      const messagePayload = {
+        messageName: "TransactionConfirmed",
+        processInstanceId: task.processInstanceId,
+        processVariables: {
+          transactionHash: { value: receipt.transactionHash, type: "String" },
+          transactionStatus: { value: receipt.status, type: "String" },
+        },
+      }
+      logger.info("Sending message to Camunda:", messagePayload);
+      const response = await axios.post(camundaApiUrl+'/message', messagePayload);
+      logger.info("Message sent to Camunda:", response.data);
+    } catch (error) {
+      logger.error("Error in broadcastTransaction task:", error);
+      if (error instanceof Error) {
+        await taskService.handleBpmnError(
+          task,
+          "BROADCAST TRANSACTION ERROR",
+          `Transaction broadcasting failed: ${error.message}`
+        );
+      }
+    }
+  });
