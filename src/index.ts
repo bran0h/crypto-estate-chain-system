@@ -202,7 +202,7 @@ const runLogTransactionConsumer = async () => {
         logger.info("LogTransaction event received:", payload);
         
         const { transactionHash, transactionStatus, offerId, userId, processId } = payload;
-        logger.info(`Logging transaction with hash: ${transactionHash} and status: ${transactionStatus}`);
+        logger.info(`Logging transaction with hash: ${transactionHash} and status: ${transactionStatus} and processId: ${processId}`);
         
         // Save into transaction supabase table
         const supabaseClient = createDirectServiceClient();
@@ -210,6 +210,7 @@ const runLogTransactionConsumer = async () => {
           .from("transactions")
           .insert([
             {
+              process_id: processId,
               hash: transactionHash,
               status: transactionStatus,
               offer_id: offerId,

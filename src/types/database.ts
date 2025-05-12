@@ -15,6 +15,7 @@ export type Database = {
           hash: string | null
           id: number
           offer_id: string
+          process_id: string | null
           status: string
           user_id: string
         }
@@ -23,6 +24,7 @@ export type Database = {
           hash?: string | null
           id?: number
           offer_id: string
+          process_id?: string | null
           status: string
           user_id: string
         }
@@ -31,6 +33,7 @@ export type Database = {
           hash?: string | null
           id?: number
           offer_id?: string
+          process_id?: string | null
           status?: string
           user_id?: string
         }
@@ -147,8 +150,7 @@ export type TablesUpdate<
       ? U
       : never
     : never
-
-export type Enums<
+    export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof Database },
